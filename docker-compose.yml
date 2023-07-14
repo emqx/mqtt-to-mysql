@@ -1,0 +1,100 @@
+version: '3.8'
+services:
+  emqx-enterprise:
+    image: emqx/emqx-enterprise:5.0.3
+    container_name: emqx
+    healthcheck:
+      test: ["CMD", "emqx", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+    ports:
+      - 1883:1883
+      - 18083:18083
+    volumes:
+      - $PWD/emqx/cluster.hocon:/opt/emqx/data/configs/cluster.hocon
+      - $PWD/emqx/api_secret:/opt/emqx/data/api_secret
+    environment:
+      EMQX_DASHBOARD__BOOTSTRAP_USERS_FILE: '"/opt/emqx/data/api_secret"'
+    depends_on:
+      mysql: 
+        condition: service_started   
+
+  emqx-exporter:
+    image: emqx/emqx-exporter
+    container_name: emqx-exporter
+    ports:
+      - 8085:8085
+    command:
+      - '--emqx.nodes=emqx-enterprise:18083'
+      - '--emqx.auth-username=5256FEDC3FC3'
+      - '--emqx.auth-password=75ECB2F1-9CE0-4768-921C-15AE412E5FBE'
+    depends_on:
+      emqx-enterprise:
+        condition: service_healthy
+
+  mqttx-simulate:
+    image: emqx/mqttx-cli:v1.9.3
+    container_name: mqttx-simulate
+    volumes:
+      - $PWD/mqttx/oil-extraction.js:/app/mqttx-simulate/oil-extraction.js
+    command:
+      - /bin/sh
+      - -c
+      - |
+        mqttx simulate --file /app/mqttx-simulate/oil-extraction.js -c 5 -h emqx-enterprise -im 1000
+    depends_on:
+      emqx-enterprise:
+        condition: service_healthy
+
+  mqttx:
+    image: emqx/mqttx-cli:v1.9.3
+    container_name: mqttx
+    command:
+      - /bin/sh
+      - -c
+      - |
+        mqttx sub -t 'mqttx/simulate/#' -v -h emqx-enterprise
+    depends_on:
+      emqx-enterprise:
+        condition: service_healthy
+
+  mysql:
+    image: mysql:8.0.33
+    container_name: mysql
+    ports:
+      - 3306:3306
+    environment:
+      - MYSQL_ROOT_PASSWORD=public
+    volumes:
+      - $PWD/mysql/create-table.sql:/docker-entrypoint-initdb.d/init.sql
+
+  prometheus:
+    image: prom/prometheus:v2.44.0
+    container_name: prometheus
+    ports:
+      - 9090:9090
+    volumes:
+      - $PWD/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yml
+
+  grafana:
+    image: grafana/grafana:9.3.2
+    container_name: grafana
+    ports:
+      - 3000:3000
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=public
+    volumes:
+      - $PWD/emqx-exporter/config/grafana-template/EMQX5-enterprise:/grafana-dashboard-emqx5-ee
+      - $PWD/grafana-dashboards:/grafana-dashboard-oil-extraction
+      - $PWD/grafana-provisioning/dashboard.yaml:/etc/grafana/provisioning/dashboards/dashboard.yaml
+      - $PWD/grafana-provisioning/datasource.yaml:/etc/grafana/provisioning/datasources/datasource.yaml
+    depends_on:
+      emqx-enterprise:
+        condition: service_healthy
+      mysql:
+        condition: service_started
+
+networks:
+  emqx-net:
+    name: emqx-net
